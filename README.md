@@ -46,10 +46,10 @@ The project follows a batch ELT architecture on a single-node Hadoop cluster:
 
 1. **Source:** Brazilian E-Commerce Public Dataset by Olist (CSV, via Kaggle).
 2. **Staging:** CSVs loaded into a MySQL `olist` database (4 tables: `customers`, `sellers`, `orders`, `order_items`).
-3. **Ingestion:** Apache Sqoop imports each table from MySQL into HDFS (`/user/hadoop/commerce_storage/`).
+3. **Ingestion:** Apache Sqoop imports each table from MySQL directly into HDFS as Parquet (`--as-parquetfile`), landing in `/user/hadoop/commerce_storage/` — Parquet end-to-end from the Bronze layer onward.
 4. **Silver Layer:** PySpark cleans, standardizes, and validates each table (null handling, dedup, regex validation, timestamp casting), writing Parquet to `/user/hadoop/commerce_silver/`.
-5. **Gold Layer:** PySpark builds a Kimball star schema — `dim_customer`, `dim_seller`, `dim_date`, and `fact_logistics` — writing Parquet to `/user/hadoop/commerce_gold/`.
-6. **Serving Layer:** Hive external tables over the Gold Parquet paths, queried for KPI reporting.
+5. **Gold Layer:** PySpark builds a Kimball star schema — `dim_customer`, `dim_seller`, `dim_date`, and `fact_logistics` — writing Parquet to `/user/hadoop/commerce_gold/`, with `fact_logistics` partitioned by `order_year`/`order_month`.
+6. **Serving Layer:** partitioned Hive external tables over the Gold Parquet paths, queried for KPI reporting.
 7. **Orchestration:** a bash script chains all of the above (Sqoop → Silver → Gold) and is scheduled via cron.
 
 ![Pipeline Architecture](data%20model/Pipeline%20Architecture%20Diagram.png)
@@ -80,6 +80,8 @@ Designed following the Kimball four-step process: choose the business process �
 
 A **star schema** (one fact, three dimensions) was chosen over a snowflake or galaxy design — the dimensions here don't have natural sub-hierarchies worth normalizing out, and a single fact table is sufficient for this business process.
 
+**Partitioning:** `fact_logistics` is partitioned by `order_year` and `order_month`, both pulled from `dim_date` via a join on `order_date_key` rather than re-derived independently — keeping the calendar logic defined once, in the conformed date dimension, rather than duplicated across tables. Since queries filtering by date/time period are common for logistics reporting, this enables partition pruning: Hive/Spark can skip entire partitions that don't match a query's date filter instead of scanning the full fact table.
+
 ![Data Model](data%20model/Olist_star_schema.png)
 
 ## Batch Ingestion (Sqoop)
@@ -93,10 +95,11 @@ sqoop import \
   --table <table_name> \
   --target-dir /user/hadoop/commerce_storage/<table_name> \
   --delete-target-dir \
+  --as-parquetfile \
   --m 1
 ```
 
-`--delete-target-dir` makes every import idempotent — re-running an import for a given table fully replaces its HDFS output rather than appending duplicates.
+`--delete-target-dir` makes every import idempotent — re-running an import for a given table fully replaces its HDFS output rather than appending duplicates. `--as-parquetfile` writes the Bronze layer directly as Parquet rather than delimited text, so every layer of the pipeline (Bronze, Silver, Gold) is Parquet end-to-end.
 
 ## Transformations (PySpark)
 
@@ -111,18 +114,21 @@ sqoop import \
 **Gold layer** (`spark/scripts/gold_transformations.py`):
 - `dim_customer` / `dim_seller` — direct, validated pass-throughs from Silver.
 - `dim_date` — generated via `sequence()` + `explode()` across the full order date range, with standard calendar attributes derived from `date_format`/`year`/`quarter`/etc.
-- `fact_logistics` — aggregates `order_items` to order grain (primary seller via `MAX_BY`, summed freight/price), filters to delivered orders with a valid delivery date, joins to both dimensions, and derives all six logistics measures.
+- `fact_logistics` — aggregates `order_items` to order grain (primary seller via `MAX_BY`, summed freight/price), filters to delivered orders with a valid delivery date, joins to both dimensions plus `dim_date` (to source `order_year`/`order_month` for partitioning rather than recomputing them), derives all six logistics measures, and writes partitioned by `order_year`/`order_month`.
 
 The full exploratory process — EDA, the missing-value investigation, the seller row-count discrepancy, and the reasoning behind each decision — is documented in `spark/Olist_Data_Processing_notebook.ipynb`. The two `.py` scripts are the clean, production versions of that same logic, meant to be run via `spark-submit`.
 
 ## Serving Layer (Hive)
 
-Four external tables are created in Hue's Hive editor, pointing directly at the Gold-layer Parquet paths — no data movement, Hive reads what Spark already wrote:
+Four external tables are created in Hue's Hive editor, pointing directly at the Gold-layer Parquet paths — no data movement, Hive reads what Spark already wrote. `fact_logistics` is declared as a partitioned table, matching the `order_year`/`order_month` partition columns written by Spark:
 
 ```sql
 CREATE EXTERNAL TABLE fact_logistics (...)
+PARTITIONED BY (order_year INT, order_month INT)
 STORED AS PARQUET
 LOCATION '/user/hadoop/commerce_gold/fact_logistics';
+
+MSCK REPAIR TABLE fact_logistics;  -- registers existing partition folders with the Hive metastore
 ```
 
 See `hive/create_tables.sql` for full DDL and `hive/kpi_queries.sql` for the reporting queries, including:
@@ -145,7 +151,9 @@ Getting the script working correctly under cron (as opposed to running manually)
 
 ## Dashboard
 
-![Dashboard Screenshot](dashboard/Screenshot%202026-09-04%20162631.png)
+Interactive filters by customer state and other dimensions allow drilling into delivery performance for specific regions rather than only viewing aggregate, pipeline-wide KPIs.
+
+![Dashboard Screenshot](dashboard/dashboard.png)
 
 ## Repository Structure
 

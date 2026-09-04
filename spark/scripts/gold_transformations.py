@@ -90,4 +90,16 @@ fact_logistics = aggregated_orders.join(
     "items_count"
 )
 
-fact_logistics.write.mode("overwrite").parquet(f"{gold_path}/fact_logistics")
+fact_logistics = fact_logistics.join(
+    dim_date.select(
+        col("date_key").alias("order_date_key"),
+        col("year").alias("order_year"),
+        col("month").alias("order_month")
+    ),
+    on="order_date_key",
+    how="left"
+)
+
+fact_logistics.write.mode("overwrite").partitionBy("order_year", "order_month").parquet(
+    f"{gold_path}/fact_logistics"
+)

@@ -19,6 +19,7 @@ for table in customers sellers orders order_items; do
         --table "$table" \
         --target-dir "/user/hadoop/commerce_storage/$table" \
         --delete-target-dir \
+        --as-parquetfile \
         --m 1 >> "$LOG_FILE" 2>&1
     echo "$table import done." | tee -a "$LOG_FILE"
 done

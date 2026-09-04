@@ -50,6 +50,7 @@ CREATE EXTERNAL TABLE fact_logistics (
     total_order_price DOUBLE,
     items_count INT
 )
+PARTITIONED BY (order_year INT, order_month INT)
 STORED AS PARQUET
 LOCATION '/user/hadoop/commerce_gold/fact_logistics';
 
