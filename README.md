@@ -143,7 +143,7 @@ Getting the script working correctly under cron (as opposed to running manually)
 
 ## Dashboard
 
-*(Pending — dashboard visuals and screenshots to be added by the team once finalized.)*
+![Dashboard Screenshot](dashboard/Screenshot%202026-09-04%20162631.png)
 
 ## Repository Structure
 
