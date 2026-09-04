@@ -52,7 +52,7 @@ The project follows a batch ELT architecture on a single-node Hadoop cluster:
 6. **Serving Layer:** Hive external tables over the Gold Parquet paths, queried for KPI reporting.
 7. **Orchestration:** a bash script chains all of the above (Sqoop → Silver → Gold) and is scheduled via cron.
 
-*(Pipeline architecture diagram — see `data_model/`.)*
+![Pipeline Architecture](data%20model/Pipeline%20Architecture%20Diagram.png)
 
 ## Data Warehouse Design
 
@@ -79,6 +79,8 @@ Designed following the Kimball four-step process: choose the business process �
 | `total_order_price` | Additive | Aggregated product value per order |
 
 A **star schema** (one fact, three dimensions) was chosen over a snowflake or galaxy design — the dimensions here don't have natural sub-hierarchies worth normalizing out, and a single fact table is sufficient for this business process.
+
+![Data Model](data%model/Olist_star_schema.png)
 
 ## Batch Ingestion (Sqoop)
 
@@ -160,9 +162,9 @@ Logistics Performance Pipeline/
 ├── orchestration/
 │   └── run_pipeline.sh
 ├── data_model/
-│   └── (ERD, Kimball design docs, pipeline architecture diagram)
+│   └── (Star Schema, pipeline architecture diagram)
 └── dashboards/
-   └── (pending)
+   └── (dahsboard photo, dashboard file)
  
 ```
 
@@ -223,10 +225,10 @@ crontab -e
 
 ## Team
 
-- **Abdelrahman Mohamed**
-- **Mahmoud Ali**
-- **Hady El Fadaly**
-- **Mariam Tarek**
+- **Abdelrahman Mohamed** - [GitHub Profile](https://github.com/Abdelrahmankewan2823)
+- **Mahmoud Ali** - [GitHub Profile](https://github.com/Mahmoud-910)
+- **Hady El Fadaly** - [GitHub Profile](https://github.com/hadyelfadaly)
+- **Mariam Tarek** - [GitHub Profile](https://github.com/MariamTareq2211)
 
 ## Future Enhancements
 
