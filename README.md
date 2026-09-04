@@ -80,7 +80,7 @@ Designed following the Kimball four-step process: choose the business process â†
 
 A **star schema** (one fact, three dimensions) was chosen over a snowflake or galaxy design â€” the dimensions here don't have natural sub-hierarchies worth normalizing out, and a single fact table is sufficient for this business process.
 
-![Data Model](data%model/Olist_star_schema.png)
+![Data Model](data%20model/Olist_star_schema.png)
 
 ## Batch Ingestion (Sqoop)
 
