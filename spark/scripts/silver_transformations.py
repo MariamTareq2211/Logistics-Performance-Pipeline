@@ -190,3 +190,5 @@ order_items_silver = order_items_silver.withColumn(
 )
 
 order_items_silver.write.mode("overwrite").parquet(f"{silver_path}/order_items")
+
+spark.stop()
