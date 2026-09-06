@@ -18,7 +18,7 @@ This project builds an end-to-end batch data engineering pipeline on a Hadoop/Sp
 - Ingests the Olist Brazilian e-commerce dataset (customers, sellers, orders, order items) from MySQL into HDFS via Sqoop.
 - Cleans and standardizes raw records into a validated Silver layer using PySpark.
 - Models the data into a Kimball-style star schema (Gold layer) purpose-built to answer one question: **did the order arrive on time, and why or why not?**
-- Serves the warehouse through Hive external tables for KPI analysis.
+- Creates and loads the Hive external tables over the Gold layer as part of the same automated run, so the warehouse is immediately query-ready with no manual step in between.
 - Runs unattended, end-to-end, on a schedule via a bash + cron orchestration layer.
 
 The result is a reproducible logistics analytics warehouse capable of measuring on-time delivery rate, shipping cost efficiency, and regional delivery performance.
@@ -49,8 +49,8 @@ The project follows a batch ELT architecture on a single-node Hadoop cluster:
 3. **Ingestion:** Apache Sqoop imports each table from MySQL directly into HDFS as Parquet (`--as-parquetfile`), landing in `/user/hadoop/commerce_storage/` — Parquet end-to-end from the Bronze layer onward.
 4. **Silver Layer:** PySpark cleans, standardizes, and validates each table (null handling, dedup, regex validation, timestamp casting), writing Parquet to `/user/hadoop/commerce_silver/`.
 5. **Gold Layer:** PySpark builds a Kimball star schema — `dim_customer`, `dim_seller`, `dim_date`, and `fact_logistics` — writing Parquet to `/user/hadoop/commerce_gold/`, with `fact_logistics` partitioned by `order_year`/`order_month`.
-6. **Serving Layer:** partitioned Hive external tables over the Gold Parquet paths, queried for KPI reporting.
-7. **Orchestration:** a bash script chains all of the above (Sqoop → Silver → Gold) and is scheduled via cron.
+6. **Serving Layer:** partitioned Hive external tables are created and registered over the Gold Parquet paths automatically as the final orchestration step, ready for KPI queries with no manual setup.
+7. **Orchestration:** a bash script chains all of the above (Sqoop → Silver → Gold → Hive table creation) and is scheduled via cron.
 
 ![Pipeline Architecture](data%20model/Pipeline%20Architecture%20Diagram.png)
 
@@ -120,7 +120,7 @@ The full exploratory process — EDA, the missing-value investigation, the selle
 
 ## Serving Layer (Hive)
 
-Four external tables are created in Hue's Hive editor, pointing directly at the Gold-layer Parquet paths — no data movement, Hive reads what Spark already wrote. `fact_logistics` is declared as a partitioned table, matching the `order_year`/`order_month` partition columns written by Spark:
+Four external tables are created and loaded automatically as the final stage of the orchestration script, pointing directly at the Gold-layer Parquet paths — no data movement, Hive reads what Spark already wrote. `fact_logistics` is declared as a partitioned table, matching the `order_year`/`order_month` partition columns written by Spark:
 
 ```sql
 CREATE EXTERNAL TABLE fact_logistics (...)
@@ -131,7 +131,7 @@ LOCATION '/user/hadoop/commerce_gold/fact_logistics';
 MSCK REPAIR TABLE fact_logistics;  -- registers existing partition folders with the Hive metastore
 ```
 
-See `hive/create_tables.sql` for full DDL and `hive/kpi_queries.sql` for the reporting queries, including:
+This DDL runs unattended via `hive -f` as part of every scheduled pipeline execution, so each run leaves the warehouse fully registered and immediately queryable — no manual step in Hue required. See `hive/hive_setup.hql` for full DDL and `hive/kpi_queries.sql` for the reporting queries, including:
 
 - On-Time Delivery Rate %
 - Late Delivery Rate %
@@ -141,13 +141,13 @@ See `hive/create_tables.sql` for full DDL and `hive/kpi_queries.sql` for the rep
 
 ## Orchestration
 
-`orchestration/run_pipeline.sh` chains the entire pipeline — 4 Sqoop imports → Silver transformation → Gold transformation — in sequence, using `set -e` so the script stops immediately if any stage fails rather than continuing on incomplete data. Every run produces a timestamped log capturing full stdout/stderr from every step.
+`orchestration/run_pipeline.sh` chains the entire pipeline — 4 Sqoop imports → Silver transformation → Gold transformation → Hive external table creation and loading — in a single sequence, using `set -e` so the script stops immediately if any stage fails rather than continuing on incomplete data. By running the Hive DDL as the final stage, every successful pipeline run leaves the warehouse tables created, loaded, and ready for analytics — with no manual step needed between the data landing in the Gold layer and it being queryable. Every run produces a timestamped log capturing full stdout/stderr from every step.
 
 The script is registered via `crontab -e` for scheduled, unattended execution.
 
 **Why bash + cron instead of Airflow or NiFi:** Airflow requires its own persistent scheduler/webserver/metadata-DB stack, which was too much additional load to risk on a VM already running the full Hadoop stack on constrained RAM this close to the deadline. NiFi is built for continuously arriving data, not a one-time batch pull, and its processor model isn't a natural fit for the multi-table aggregation the Gold layer needs. A bash script scheduled via cron demonstrates the same core idea — automated, unattended, scheduled execution — with far less setup risk.
 
-Getting the script working correctly under cron (as opposed to running manually) surfaced three real environment issues — `PATH` not including Sqoop's binary, the MySQL JDBC driver not being on Sqoop's classpath, and `HADOOP_CONF_DIR` not being set, causing Spark to default to the local filesystem instead of HDFS — all traced back to cron's non-interactive shell not loading the same environment as an interactive terminal. Full details in the project documentation.
+Getting the script working correctly under cron (as opposed to running manually) surfaced several real environment issues — `PATH` not including Sqoop's binary, the MySQL JDBC driver not being on Sqoop's classpath, and `HADOOP_CONF_DIR`/`YARN_CONF_DIR` not being set correctly, causing Sqoop and Spark to fall back to local execution instead of submitting to YARN/using HDFS — all traced back to cron's non-interactive shell not loading the same environment as an interactive terminal. Full details in the project documentation.
 
 ## Dashboard
 
@@ -165,7 +165,7 @@ Logistics Performance Pipeline/
 │       ├── silver_transformations.py
 │       └── gold_transformations.py
 ├── hive/
-│   ├── create_tables.sql
+│   ├── hive_setup.hql
 │   └── kpi_queries.sql
 ├── orchestration/
 │   └── run_pipeline.sh
@@ -192,9 +192,15 @@ This project was built and run on a single-node CentOS 7 VM with a pre-installed
 
 Create the `olist` database and its four tables, then load each CSV via `LOAD DATA LOCAL INFILE`. See `data_model/` for the full table DDL.
 
-### 2. Run the ingestion + transformation pipeline
+### 2. Run the full pipeline end-to-end
 
-Either run each stage manually:
+The orchestration script runs every stage — Sqoop ingestion, Silver transformation, Gold transformation, and Hive external table creation/loading — in one pass:
+
+```bash
+bash orchestration/run_pipeline.sh
+```
+
+Alternatively, each stage can be run manually for debugging or step-by-step inspection:
 
 ```bash
 # Sqoop import (repeat per table)
@@ -208,23 +214,16 @@ spark-submit spark/scripts/silver_transformations.py
 
 # Gold layer
 spark-submit spark/scripts/gold_transformations.py
+
+# Hive external tables
+hive -f hive/hive_setup.hql
 ```
 
-...or run the whole pipeline end-to-end with the orchestration script:
-
-```bash
-bash orchestration/run_pipeline.sh
-```
-
-### 3. Create the Hive tables
-
-In Hue's Hive editor (or `hive`/`beeline` CLI), run `hive/create_tables.sql` to register the four external tables over the Gold-layer Parquet paths.
-
-### 4. Run the KPI queries
+### 3. Run the KPI queries
 
 Run the queries in `hive/kpi_queries.sql` against the Hive tables to reproduce the reporting metrics.
 
-### 5. (Optional) Schedule the pipeline
+### 4. (Optional) Schedule the pipeline
 
 ```bash
 crontab -e
